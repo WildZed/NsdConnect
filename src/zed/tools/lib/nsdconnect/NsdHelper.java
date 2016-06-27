@@ -21,6 +21,8 @@ import android.content.Context;
 import android.net.nsd.NsdServiceInfo;
 import android.net.nsd.NsdManager;
 import android.util.Log;
+import java.util.Hashtable;
+// import java.util.Enumeration;
 
 
 public class NsdHelper
@@ -30,201 +32,79 @@ public class NsdHelper
     public static final String      SERVICE_NAME_PREFIX = "NsdComms";
    
     
-    Context                         m_context;
-    String                          m_serviceName;
-    String                          m_localServiceName;
-    String                          m_remoteServiceName;
-    NsdManager                      m_nsdManager;
-    NsdManager.ResolveListener      m_resolveListener;
-    NsdManager.DiscoveryListener    m_discoveryListener;
-    NsdManager.RegistrationListener m_registrationListener;
-    NsdServiceInfo                  m_service;
-    boolean                         m_serviceRegistered;
-    boolean                         m_serviceDiscovery = false;
+    Context                           m_context;
+    String                            m_serviceName;
+    String                            m_localServiceName;
+    NsdManager                        m_nsdManager;
+    NsdManager.ResolveListener        m_resolveListener;
+    NsdManager.DiscoveryListener      m_discoveryListener;
+    NsdManager.RegistrationListener   m_registrationListener;
+    NsdHelperHandler                  m_helperHandler;
+    Hashtable<String, NsdServiceInfo> m_remoteServices;
+    boolean                           m_serviceRegistered = false;
+    boolean                           m_serviceDiscovery = false;
 
 
-    public NsdHelper( Context context, String serviceName )
+    public NsdHelper( Context context, String serviceName, NsdHelperHandler helperHandler )
     {
         m_context = context;
         m_serviceName = SERVICE_NAME_PREFIX + " " + serviceName;
+        m_helperHandler = helperHandler;
         m_localServiceName = null;
-        m_remoteServiceName = null;
         m_nsdManager = (NsdManager) context.getSystemService( Context.NSD_SERVICE );
         m_serviceRegistered = false;
+        m_serviceDiscovery = false;
+        m_remoteServices = new Hashtable<String, NsdServiceInfo>();
+        initialiseNsd();
     }
     
     
-    public boolean isServiceRegistered()
+    public void tearDown()
     {
-        return m_serviceRegistered;
+        Log.d( TAG, "Tearing down NsdHelper for '" + m_serviceName + "'." );
+        
+        unregisterService();
+        stopDiscovery();
+        m_remoteServices.clear();
+        m_serviceName = null;
+    }
+    
+    
+    protected void finalize()
+    {
+        if ( m_serviceName != null )
+        {
+            tearDown();
+        }
     }
 
 
-    public void initializeNsd()
+    public void initialiseNsd()
     {
-        initializeRegistrationListener();
-        initializeResolveListener();
-        initializeDiscoveryListener();
-
+        initialiseRegistrationListener();
+        initialiseResolveListener();
+        initialiseDiscoveryListener();
+    
         // m_nsdManager.init(m_context.getMainLooper(), this);
-    }
-
-
-    public void initializeRegistrationListener()
-    {
-        m_registrationListener = new NsdManager.RegistrationListener()
-        {
-            // @Override
-            public void onServiceRegistered( NsdServiceInfo serviceInfo )
-            {
-                Log.d( TAG, "Service registered: " + serviceInfo );
-                
-                m_localServiceName = serviceInfo.getServiceName();
-                m_serviceRegistered = true;
-            }
-
-
-            // @Override
-            public void onRegistrationFailed( NsdServiceInfo serviceInfo, int errorCode )
-            {
-                Log.e( TAG, "Service registration failed: " + serviceInfo + " error code: " + errorCode );
-                
-                m_serviceRegistered = false;
-            }
-
-
-            // @Override
-            public void onServiceUnregistered( NsdServiceInfo serviceInfo )
-            {
-                Log.d( TAG, "Service unregistered: " + serviceInfo );
-                
-                m_serviceRegistered = false;
-            }
-
-
-            // @Override
-            public void onUnregistrationFailed( NsdServiceInfo serviceInfo, int errorCode )
-            {
-                Log.e( TAG, "Service unregistration failed: " + serviceInfo + " error code: " + errorCode );
-                
-                m_serviceRegistered = false;              
-            }
-
-        };
-    }
-
-
-    public void initializeResolveListener()
-    {
-        m_resolveListener = new NsdManager.ResolveListener()
-        {
-            // @Override
-            public void onResolveFailed( NsdServiceInfo serviceInfo, int errorCode )
-            {
-                Log.e( TAG, "Resolve failed: " + errorCode );
-            }
-
-
-            // @Override
-            public void onServiceResolved( NsdServiceInfo serviceInfo )
-            {
-                Log.d( TAG, "Resolve Succeeded: " + serviceInfo );
-
-                if ( m_localServiceName != null && serviceInfo.getServiceName().equals( m_localServiceName ) )
-                {
-                    Log.d( TAG, "Same IP." );
-                    return;
-                }
-                
-                m_remoteServiceName = serviceInfo.getServiceName();
-                m_service = serviceInfo;
-            }
-        };
-    }
-
-
-    public void initializeDiscoveryListener()
-    {
-        m_discoveryListener = new NsdManager.DiscoveryListener()
-        {
-            // @Override
-            public void onDiscoveryStarted( String regType )
-            {
-                Log.d( TAG, "Service discovery started" );
-            }
-
-
-            // @Override
-            public void onServiceFound( NsdServiceInfo service )
-            {
-                Log.d( TAG, "Service discovered: " + service );
-                
-                if ( ! service.getServiceType().equals( SERVICE_TYPE ) )
-                {
-                    Log.d( TAG, "Unknown Service Type: " + service.getServiceType() );
-                }
-                else if ( m_localServiceName != null && service.getServiceName().equals( m_localServiceName ) )
-                {
-                    Log.d( TAG, "Service on same machine: " + service );
-                }
-                else if ( service.getServiceName().contains( m_serviceName ) )
-                {
-                    Log.i( TAG, "Resolving service on remote machine: " + service );
-                    
-                    m_nsdManager.resolveService( service, m_resolveListener );
-                }
-            }
-
-
-            // @Override
-            public void onServiceLost( NsdServiceInfo service )
-            {
-                if ( m_service == service )
-                {
-                    Log.w( TAG, "Service lost: " + service );
-                    
-                    m_service = null;
-                }
-                else
-                {
-                    Log.i( TAG, "Service lost: " + service );
-                }
-            }
-
-
-            // @Override
-            public void onDiscoveryStopped( String serviceType )
-            {
-                Log.i( TAG, "Discovery stopped: " + serviceType );
-            }
-
-
-            // @Override
-            public void onStartDiscoveryFailed( String serviceType, int errorCode )
-            {
-                Log.e( TAG, "Discovery failed: Error code:" + errorCode );
-                m_nsdManager.stopServiceDiscovery( this );
-            }
-
-
-            // @Override
-            public void onStopDiscoveryFailed( String serviceType, int errorCode )
-            {
-                Log.e( TAG, "Discovery failed: Error code:" + errorCode );
-                
-                m_nsdManager.stopServiceDiscovery( this );
-            }
-        };
     }
 
 
     public void registerService( int port )
     {
+//        if ( isServiceRegistered() )
+//        {
+//            Log.w( TAG, "Service '" + m_serviceName + "' is already registered." );
+//            
+//            return;
+//        }
+            
+        Log.i( TAG, "Registering service '" + m_serviceName + "'." );
+        
         NsdServiceInfo serviceInfo = new NsdServiceInfo();
         serviceInfo.setPort( port );
         serviceInfo.setServiceName( m_serviceName );
         serviceInfo.setServiceType( SERVICE_TYPE );
-
+    
         try
         {
             m_nsdManager.registerService( serviceInfo, NsdManager.PROTOCOL_DNS_SD, m_registrationListener );
@@ -234,6 +114,28 @@ public class NsdHelper
             Log.e( TAG, "Error registering service (may already be registered): ", e );
             e.printStackTrace();
         }
+    }
+
+
+    public void unregisterService()
+    {
+        m_serviceRegistered = false;
+        
+        try
+        {
+            m_nsdManager.unregisterService( m_registrationListener );
+        }
+        catch ( Exception e )
+        {
+            Log.e( TAG, "Error unregistering service (may not have been registered): ", e );
+            e.printStackTrace();
+        }
+    }
+
+
+    public boolean isServiceRegistered()
+    {
+        return m_serviceRegistered;
     }
 
 
@@ -275,28 +177,175 @@ public class NsdHelper
         }
         catch ( Exception e )
         {
-            Log.e( TAG, "Error stopping service discovery (may already be started): ", e );
+            Log.e( TAG, "Error stopping service discovery (may already be stopped): ", e );
             e.printStackTrace();
         }
     }
 
 
-    public NsdServiceInfo getChosenServiceInfo()
+    public Hashtable<String, NsdServiceInfo> getAllServiceInfos()
     {
-        return m_service;
+        return m_remoteServices;
+    }
+    
+    
+    private synchronized void addNewServiceInfo( NsdServiceInfo serviceInfo )
+    {
+        String serviceName = serviceInfo.getServiceName();
+
+        if ( m_localServiceName != null && serviceName.equals( m_localServiceName ) )
+        {
+            Log.d( TAG, "Same IP." );
+            return;
+        }
+       
+        m_remoteServices.put( serviceName, serviceInfo );
+        m_helperHandler.onNewService( serviceInfo );
     }
 
 
-    public void tearDown()
+    private void initialiseRegistrationListener()
     {
-        try
+        m_registrationListener = new NsdManager.RegistrationListener()
         {
-            m_nsdManager.unregisterService( m_registrationListener );
-        }
-        catch ( Exception e )
-        {
-            Log.e( TAG, "Error unregistering service (may not have been registered): ", e );
-            e.printStackTrace();
-        }
+            // @Override
+            public void onServiceRegistered( NsdServiceInfo serviceInfo )
+            {
+                Log.i( TAG, "Service registered: " + serviceInfo );
+                
+                m_localServiceName = serviceInfo.getServiceName();
+                m_serviceRegistered = true;
+            }
+
+
+            // @Override
+            public void onRegistrationFailed( NsdServiceInfo serviceInfo, int errorCode )
+            {
+                Log.e( TAG, "Service registration failed: " + serviceInfo + " error code: " + errorCode );
+                
+                m_serviceRegistered = false;
+            }
+
+
+            // @Override
+            public void onServiceUnregistered( NsdServiceInfo serviceInfo )
+            {
+                Log.i( TAG, "Service unregistered: " + serviceInfo );
+                
+                m_serviceRegistered = false;
+            }
+
+
+            // @Override
+            public void onUnregistrationFailed( NsdServiceInfo serviceInfo, int errorCode )
+            {
+                Log.e( TAG, "Service unregistration failed: " + serviceInfo + " error code: " + errorCode );
+                
+                m_serviceRegistered = false;              
+            }
+
+        };
     }
+
+
+    private void initialiseDiscoveryListener()
+    {
+        m_discoveryListener = new NsdManager.DiscoveryListener()
+        {
+            // @Override
+            public void onDiscoveryStarted( String regType )
+            {
+                Log.i( TAG, "Service discovery started" );
+            }
+
+
+            // @Override
+            public void onServiceFound( NsdServiceInfo serviceInfo )
+            {
+                Log.d( TAG, "Service discovered: " + serviceInfo );
+                
+                String serviceName = serviceInfo.getServiceName();
+                
+                if ( ! serviceInfo.getServiceType().equals( SERVICE_TYPE ) )
+                {
+                    Log.d( TAG, "Unknown Service Type: " + serviceInfo.getServiceType() );
+                }
+                else if ( m_localServiceName != null && serviceName.equals( m_localServiceName ) )
+                {
+                    Log.d( TAG, "Service on same machine: " + serviceInfo );
+                }
+                else if ( serviceName.contains( m_serviceName ) )
+                {
+                    Log.i( TAG, "Resolving service on remote machine: " + serviceInfo );
+                    
+                    m_nsdManager.resolveService( serviceInfo, m_resolveListener );
+                }
+            }
+
+
+            // @Override
+            public void onServiceLost( NsdServiceInfo serviceInfo )
+            {
+                NsdServiceInfo removedService = m_remoteServices.remove( serviceInfo.getServiceName() );
+                
+                if ( removedService != null )
+                {
+                    Log.w( TAG, "Remote service lost: " + serviceInfo );
+                }
+                else
+                {
+                    Log.d( TAG, "Other service lost: " + serviceInfo );
+                }
+            }
+
+
+            // @Override
+            public void onDiscoveryStopped( String serviceType )
+            {
+                Log.i( TAG, "Discovery stopped: " + serviceType );
+            }
+
+
+            // @Override
+            public void onStartDiscoveryFailed( String serviceType, int errorCode )
+            {
+                Log.e( TAG, "Discovery failed: Error code:" + errorCode );
+                
+                m_nsdManager.stopServiceDiscovery( this );
+            }
+
+
+            // @Override
+            public void onStopDiscoveryFailed( String serviceType, int errorCode )
+            {
+                Log.e( TAG, "Discovery failed: Error code:" + errorCode );
+                
+                m_nsdManager.stopServiceDiscovery( this );
+            }
+        };
+    }
+
+
+    private void initialiseResolveListener()
+    {
+        m_resolveListener = new NsdManager.ResolveListener()
+        {
+            // @Override
+            public void onResolveFailed( NsdServiceInfo serviceInfo, int errorCode )
+            {
+                Log.e( TAG, "Resolve failed: " + errorCode );
+            }
+    
+    
+            // @Override
+            public void onServiceResolved( NsdServiceInfo serviceInfo )
+            {
+                Log.d( TAG, "Resolve succeeded: " + serviceInfo );
+                
+                addNewServiceInfo( serviceInfo );
+            }
+        };
+    }
+    
+    
 }
