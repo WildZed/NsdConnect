@@ -1,5 +1,10 @@
 <resources>
 
     <string name="app_name">nsdconnect</string>
-
+    <string name="nsd_service_name">NSD Connection Service</string>
+    <string name="nsd_service_connected">NSD service connected</string>
+    <string name="nsd_service_disconnected">NSD service disconnected</string>
+    <string name="nsd_service_started">NSD service started</string>
+    <string name="nsd_service_stopped">NSD service stopped</string>
+    
 </resources>

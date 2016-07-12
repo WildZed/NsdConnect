@@ -11,10 +11,16 @@ public final class R {
     public static final class attr {
     }
     public static final class drawable {
-        public static int ic_launcher=0x7f020000;
+        public static int nsd_default=0x7f020000;
+        public static int nsd_service=0x7f020001;
     }
     public static final class string {
         public static int app_name=0x7f030000;
+        public static int nsd_service_connected=0x7f030002;
+        public static int nsd_service_disconnected=0x7f030003;
+        public static int nsd_service_name=0x7f030001;
+        public static int nsd_service_started=0x7f030004;
+        public static int nsd_service_stopped=0x7f030005;
     }
     public static final class style {
         /** 

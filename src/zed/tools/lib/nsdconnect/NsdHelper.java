@@ -1,4 +1,5 @@
 package zed.tools.lib.nsdconnect;
+
 /*
  * Copyright (C) 2012 The Android Open Source Project
  * 
@@ -15,34 +16,31 @@ package zed.tools.lib.nsdconnect;
  * limitations under the License.
  */
 
-
-
 import android.content.Context;
 import android.net.nsd.NsdServiceInfo;
 import android.net.nsd.NsdManager;
 import android.util.Log;
 import java.util.Hashtable;
-// import java.util.Enumeration;
 
+
+// import java.util.Enumeration;
 
 public class NsdHelper
 {
-    public static final String      TAG = "NsdHelper";
-    public static final String      SERVICE_TYPE = "_http._tcp.";
-    public static final String      SERVICE_NAME_PREFIX = "NsdComms";
-   
-    
+    public static final String        TAG                 = "NsdHelper";
+    public static final String        SERVICE_TYPE        = "_http._tcp.";
+    public static final String        SERVICE_NAME_PREFIX = "NsdComms";
+
     Context                           m_context;
     String                            m_serviceName;
     String                            m_localServiceName;
     NsdManager                        m_nsdManager;
-    NsdManager.ResolveListener        m_resolveListener;
-    NsdManager.DiscoveryListener      m_discoveryListener;
     NsdManager.RegistrationListener   m_registrationListener;
+    NsdManager.DiscoveryListener      m_discoveryListener;
     NsdHelperHandler                  m_helperHandler;
     Hashtable<String, NsdServiceInfo> m_remoteServices;
     boolean                           m_serviceRegistered = false;
-    boolean                           m_serviceDiscovery = false;
+    boolean                           m_serviceDiscovery  = false;
 
 
     public NsdHelper( Context context, String serviceName, NsdHelperHandler helperHandler )
@@ -57,19 +55,19 @@ public class NsdHelper
         m_remoteServices = new Hashtable<String, NsdServiceInfo>();
         initialiseNsd();
     }
-    
-    
+
+
     public void tearDown()
     {
         Log.d( TAG, "Tearing down NsdHelper for '" + m_serviceName + "'." );
-        
+
         unregisterService();
         stopDiscovery();
         m_remoteServices.clear();
         m_serviceName = null;
     }
-    
-    
+
+
     protected void finalize()
     {
         if ( m_serviceName != null )
@@ -79,32 +77,38 @@ public class NsdHelper
     }
 
 
+    public String getServiceName()
+    {
+        return m_serviceName;
+    }
+
+
     public void initialiseNsd()
     {
         initialiseRegistrationListener();
-        initialiseResolveListener();
         initialiseDiscoveryListener();
-    
+        // initialiseResolveListener();
+
         // m_nsdManager.init(m_context.getMainLooper(), this);
     }
 
 
     public void registerService( int port )
     {
-//        if ( isServiceRegistered() )
-//        {
-//            Log.w( TAG, "Service '" + m_serviceName + "' is already registered." );
-//            
-//            return;
-//        }
-            
+        // if ( isServiceRegistered() )
+        // {
+        // Log.w( TAG, "Service '" + m_serviceName + "' is already registered." );
+        //
+        // return;
+        // }
+
         Log.i( TAG, "Registering service '" + m_serviceName + "'." );
-        
+
         NsdServiceInfo serviceInfo = new NsdServiceInfo();
         serviceInfo.setPort( port );
         serviceInfo.setServiceName( m_serviceName );
         serviceInfo.setServiceType( SERVICE_TYPE );
-    
+
         try
         {
             m_nsdManager.registerService( serviceInfo, NsdManager.PROTOCOL_DNS_SD, m_registrationListener );
@@ -120,7 +124,7 @@ public class NsdHelper
     public void unregisterService()
     {
         m_serviceRegistered = false;
-        
+
         try
         {
             m_nsdManager.unregisterService( m_registrationListener );
@@ -146,7 +150,7 @@ public class NsdHelper
             Log.w( TAG, "Service discovery already started!" );
             return;
         }
-        
+
         try
         {
             m_serviceDiscovery = true;
@@ -170,10 +174,10 @@ public class NsdHelper
     public void stopDiscovery()
     {
         m_serviceDiscovery = false;
-        
+
         try
         {
-            m_nsdManager.stopServiceDiscovery( m_discoveryListener );    
+            m_nsdManager.stopServiceDiscovery( m_discoveryListener );
         }
         catch ( Exception e )
         {
@@ -187,8 +191,8 @@ public class NsdHelper
     {
         return m_remoteServices;
     }
-    
-    
+
+
     private synchronized void addNewServiceInfo( NsdServiceInfo serviceInfo )
     {
         String serviceName = serviceInfo.getServiceName();
@@ -198,7 +202,7 @@ public class NsdHelper
             Log.d( TAG, "Same IP." );
             return;
         }
-       
+
         m_remoteServices.put( serviceName, serviceInfo );
         m_helperHandler.onNewService( serviceInfo );
     }
@@ -212,7 +216,7 @@ public class NsdHelper
             public void onServiceRegistered( NsdServiceInfo serviceInfo )
             {
                 Log.i( TAG, "Service registered: " + serviceInfo );
-                
+
                 m_localServiceName = serviceInfo.getServiceName();
                 m_serviceRegistered = true;
             }
@@ -222,7 +226,7 @@ public class NsdHelper
             public void onRegistrationFailed( NsdServiceInfo serviceInfo, int errorCode )
             {
                 Log.e( TAG, "Service registration failed: " + serviceInfo + " error code: " + errorCode );
-                
+
                 m_serviceRegistered = false;
             }
 
@@ -231,7 +235,7 @@ public class NsdHelper
             public void onServiceUnregistered( NsdServiceInfo serviceInfo )
             {
                 Log.i( TAG, "Service unregistered: " + serviceInfo );
-                
+
                 m_serviceRegistered = false;
             }
 
@@ -240,8 +244,8 @@ public class NsdHelper
             public void onUnregistrationFailed( NsdServiceInfo serviceInfo, int errorCode )
             {
                 Log.e( TAG, "Service unregistration failed: " + serviceInfo + " error code: " + errorCode );
-                
-                m_serviceRegistered = false;              
+
+                m_serviceRegistered = false;
             }
 
         };
@@ -263,10 +267,10 @@ public class NsdHelper
             public void onServiceFound( NsdServiceInfo serviceInfo )
             {
                 Log.d( TAG, "Service discovered: " + serviceInfo );
-                
+
                 String serviceName = serviceInfo.getServiceName();
-                
-                if ( ! serviceInfo.getServiceType().equals( SERVICE_TYPE ) )
+
+                if ( !serviceInfo.getServiceType().equals( SERVICE_TYPE ) )
                 {
                     Log.d( TAG, "Unknown Service Type: " + serviceInfo.getServiceType() );
                 }
@@ -277,8 +281,8 @@ public class NsdHelper
                 else if ( serviceName.contains( m_serviceName ) )
                 {
                     Log.i( TAG, "Resolving service on remote machine: " + serviceInfo );
-                    
-                    m_nsdManager.resolveService( serviceInfo, m_resolveListener );
+
+                    m_nsdManager.resolveService( serviceInfo, createResolveListener() );
                 }
             }
 
@@ -287,7 +291,7 @@ public class NsdHelper
             public void onServiceLost( NsdServiceInfo serviceInfo )
             {
                 NsdServiceInfo removedService = m_remoteServices.remove( serviceInfo.getServiceName() );
-                
+
                 if ( removedService != null )
                 {
                     Log.w( TAG, "Remote service lost: " + serviceInfo );
@@ -310,7 +314,7 @@ public class NsdHelper
             public void onStartDiscoveryFailed( String serviceType, int errorCode )
             {
                 Log.e( TAG, "Discovery failed: Error code:" + errorCode );
-                
+
                 m_nsdManager.stopServiceDiscovery( this );
             }
 
@@ -319,33 +323,32 @@ public class NsdHelper
             public void onStopDiscoveryFailed( String serviceType, int errorCode )
             {
                 Log.e( TAG, "Discovery failed: Error code:" + errorCode );
-                
+
                 m_nsdManager.stopServiceDiscovery( this );
             }
         };
     }
 
 
-    private void initialiseResolveListener()
+    private NsdManager.ResolveListener createResolveListener()
     {
-        m_resolveListener = new NsdManager.ResolveListener()
+        return new NsdManager.ResolveListener()
         {
             // @Override
             public void onResolveFailed( NsdServiceInfo serviceInfo, int errorCode )
             {
                 Log.e( TAG, "Resolve failed: " + errorCode );
             }
-    
-    
+
+
             // @Override
             public void onServiceResolved( NsdServiceInfo serviceInfo )
             {
                 Log.d( TAG, "Resolve succeeded: " + serviceInfo );
-                
+
                 addNewServiceInfo( serviceInfo );
             }
         };
     }
-    
-    
+
 }
