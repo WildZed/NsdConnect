@@ -11,8 +11,10 @@ public final class R {
     public static final class attr {
     }
     public static final class drawable {
-        public static int nsd_default=0x7f020000;
-        public static int nsd_service=0x7f020001;
+        public static int ic_nsd_debug=0x7f020000;
+        public static int ic_nsd_refresh=0x7f020001;
+        public static int ic_nsd_service=0x7f020002;
+        public static int ic_nsd_stop=0x7f020003;
     }
     public static final class string {
         public static int app_name=0x7f030000;

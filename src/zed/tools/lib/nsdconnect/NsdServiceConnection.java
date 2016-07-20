@@ -54,8 +54,8 @@ public class NsdServiceConnection implements ServiceConnection
         m_context = context;
         m_serviceName = serviceName;
         m_clientMessenger = new Messenger( clientHandler );
-        // This starts the service if not already running.
-        m_context.startService( new Intent( m_context, NsdService.class ) );
+        
+        startService();
     }
 
 
@@ -64,7 +64,7 @@ public class NsdServiceConnection implements ServiceConnection
         Message msg = Message.obtain( null, NsdService.MSG_REGISTER_CLIENT );
         Bundle bundle = new Bundle();
 
-        bundle.putString( "serviceName", m_serviceName );
+        bundle.putString( NsdService.SERVICE_NAME, m_serviceName );
         msg.setData( bundle );
 
         if ( m_isLocalService )
@@ -148,6 +148,12 @@ public class NsdServiceConnection implements ServiceConnection
     }
 
 
+    public void refresh()
+    {
+        sendMessageToRemoteService( Message.obtain( null, NsdService.MSG_REFRESH ) );
+    }
+
+
     public void pause()
     {
         sendMessageToRemoteService( Message.obtain( null, NsdService.MSG_PAUSE ) );
@@ -157,6 +163,21 @@ public class NsdServiceConnection implements ServiceConnection
     public void resume()
     {
         sendMessageToRemoteService( Message.obtain( null, NsdService.MSG_RESUME ) );
+    }
+    
+    
+    // This starts the service if not already running.
+    private void startService()
+    {
+        Intent startServiceIntent = new Intent( m_context, NsdService.class );
+        
+        startServiceIntent.setAction( NsdService.ACTION_START_SERVICE );
+        // This sets the name of the service, but may be changed later by onServiceConnected().
+        startServiceIntent.putExtra( NsdService.CLIENT_PACKAGE, m_context.getPackageName() );
+        startServiceIntent.putExtra( NsdService.CLIENT_CLASS, m_context.getClass().getSimpleName() );
+        startServiceIntent.putExtra( NsdService.SERVICE_NAME, m_serviceName );
+        m_context.startService( startServiceIntent );
+        
     }
 
 

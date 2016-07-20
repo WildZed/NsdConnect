@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -38,33 +39,47 @@ import java.util.Hashtable;
 public class NsdService extends Service
 {
     // Constants:
-    private static final String            TAG                   = NsdService.class.getSimpleName();
-    public final String                    SERVICE_THREAD_NAME   = TAG + ":ServiceThread";
-    private static final int               FOREGROUND_SERVICE    = 101;
+    public static final String             SERVICE_NAME           = "serviceName";
+    public static final String             CLIENT_PACKAGE         = "clientPackage";
+    public static final String             CLIENT_CLASS           = "clientClass";
+    public static final String             ACTION_STOP_SERVICE    = "STOP";
+    public static final String             ACTION_START_SERVICE   = "START";
+    public static final String             ACTION_REFRESH_SERVICE = "REFRESH";
+    public static final String             ACTION_DEBUG           = "DEBUG";
+
+    // Constants:
+    private static final String            TAG                    = NsdService.class.getSimpleName();
+    private static final String            SERVICE_THREAD_NAME    = TAG + ":ServiceThread";
+    private static final int               FOREGROUND_SERVICE     = 101;
+    private static final int               REMOTE_CLIENT_RETRIES  = 8;
+    private static final int               REMOTE_CLIENT_WAIT_MS  = 800;
     // Messages from NsdServiceConnection.
-    public static final int                MSG_REGISTER_CLIENT   = 1;
-    public static final int                MSG_UNREGISTER_CLIENT = 2;
-    public static final int                MSG_PAUSE             = 3;
-    public static final int                MSG_RESUME            = 4;
+    public static final int                MSG_REGISTER_CLIENT    = 1;
+    public static final int                MSG_UNREGISTER_CLIENT  = 2;
+    public static final int                MSG_PAUSE              = 3;
+    public static final int                MSG_RESUME             = 4;
+    public static final int                MSG_REFRESH            = 5;
     // Messages from service to client.
-    public static final int                MSG_CONNECTED         = 10;
-    public static final int                MSG_UNCONNECTED       = 11;
-    public static final int                MSG_INFO              = 12;                                  // Talk back.
+    public static final int                MSG_CONNECTED          = 10;
+    public static final int                MSG_UNCONNECTED        = 11;
+    public static final int                MSG_INFO               = 12;                                  // Talk back.
     // Messages between peers.
-    public static final int                MSG_TEXT              = 20;
-    public static final int                MSG_OBJECT            = 21;
+    public static final int                MSG_TEXT               = 20;
+    public static final int                MSG_OBJECT             = 21;
 
     // Member variables:
     private String                         m_serviceName;
-    private boolean                        m_isLocalService      = false;
+    private boolean                        m_isLocalService       = false;
     // private Context m_context;
-    private Class<?>                       m_nsdServiceClient;
+    private String                         m_nsdServiceClientPackage;
+    private String                         m_nsdServiceClientClass;
+    private String                         m_nsdServiceClientFullClass;
     private NsdHelper                      m_nsdHelper;
     private NotificationManager            m_notificationManager;
     private CommsServer                    m_commsServer;
-    private Hashtable<String, CommsClient> m_commsClients        = new Hashtable<String, CommsClient>();
-    private int                            m_localServerPort     = 0;
-    private boolean                        m_connected           = false;
+    private Hashtable<String, CommsClient> m_commsClients         = new Hashtable<String, CommsClient>();
+    private int                            m_localServerPort      = 0;
+    private boolean                        m_connected            = false;
     // This is the object that receives interactions from clients. See RemoteService for a more complete example.
     private IBinder                        m_binder;
     // Target we publish for clients to send messages to IncomingHandler.
@@ -154,16 +169,48 @@ public class NsdService extends Service
     @Override
     public int onStartCommand( Intent intent, int flags, int startId )
     {
-        Log.i( TAG, "NSD service started with id " + startId + ": " + intent );
-
-        if ( intent != null )
+        if ( intent == null )
         {
-            m_nsdServiceClient = intent.getClass();
+            Log.w( TAG, "Call to onStartCommand with null intent, id " + startId + "." );
+
+            return START_NOT_STICKY;
+        }
+
+        String action = intent.getAction();
+
+        if ( ACTION_START_SERVICE.equals( action ) )
+        {
+            Log.i( TAG, "NSD service started with id " + startId + ": " + intent );
+
+            m_nsdServiceClientPackage = intent.getStringExtra( CLIENT_PACKAGE );
+            m_nsdServiceClientClass = intent.getStringExtra( CLIENT_CLASS );
+            m_nsdServiceClientFullClass = m_nsdServiceClientPackage + "." + m_nsdServiceClientClass;
+            m_serviceName = intent.getStringExtra( SERVICE_NAME );
             startServiceInForeground();
+        }
+        else if ( ACTION_REFRESH_SERVICE.equals( action ) )
+        {
+            Log.i( TAG, "NSD service refreshed with id " + startId + ": " + intent );
+
+            checkReconnectClients();
+        }
+        else if ( ACTION_STOP_SERVICE.equals( action ) )
+        {
+            Log.i( TAG, "NSD service stopped with id " + startId + ": " + intent );
+
+            // onDestroy();
+            stopSelf();
+        }
+        else if ( ACTION_DEBUG.equals( action ) )
+        {
+            Log.i( TAG, "NSD service attach debugger with id " + startId + ": " + intent );
+
+            // To debug service:
+            android.os.Debug.waitForDebugger();
         }
         else
         {
-            Log.w( TAG, "Unable to start NSD service in foreground, null intent." );
+            Log.w( TAG, "NSD service unrecognised action '" + action + "' with id " + startId + ": " + intent );
         }
 
         return START_STICKY;
@@ -283,6 +330,10 @@ public class NsdService extends Service
                 resume();
                 break;
 
+            case MSG_REFRESH:
+                refresh();
+                break;
+
             case MSG_TEXT:
             case MSG_OBJECT:
                 sendMessageToClients( msg );
@@ -302,6 +353,12 @@ public class NsdService extends Service
     }
 
 
+    public void refresh()
+    {
+        checkReconnectClients();
+    }
+
+
     public void pause()
     {
         m_nsdHelper.stopDiscovery();
@@ -310,26 +367,66 @@ public class NsdService extends Service
 
     public void resume()
     {
-        checkReconnectClients();
+        refresh();
         m_nsdHelper.discoverServices();
+    }
+
+
+    private PendingIntent getServicePendingIntent( String action )
+    {
+        Intent actionIntent = new Intent( this, NsdService.class );
+
+        actionIntent.setAction( action );
+
+        PendingIntent actionPendingIntent = PendingIntent.getService( this, 0, actionIntent, 0 );
+
+        return actionPendingIntent;
+    }
+
+
+    private PendingIntent getClientActivityPendingIntent( String action )
+    {
+        Intent notificationIntent = new Intent();
+        ComponentName nsdServiceClientComponent = new ComponentName( m_nsdServiceClientPackage, m_nsdServiceClientFullClass );
+        
+        notificationIntent.setComponent( nsdServiceClientComponent );
+        notificationIntent.setAction( action );
+        notificationIntent.setFlags( Intent.FLAG_ACTIVITY_NEW_TASK ); // | Intent.FLAG_ACTIVITY_CLEAR_TASK );
+
+        // RemoteViews notificationView = new RemoteViews( getPackageName(), R.drawable.nsd_default );
+
+        PendingIntent actionPendingIntent = PendingIntent.getActivity( this, 0, notificationIntent, 0 );
+
+        // notification.contentView = notificationView;
+
+        // Intent switchIntent = new Intent( this, m_nsdServiceClient );
+        // PendingIntent pendingSwitchIntent = PendingIntent.getBroadcast( this, 0, switchIntent, 0 );
+
+        // notificationView.setOnClickPendingIntent( R.id.buttonswitch, pendingSwitchIntent );
+
+        return actionPendingIntent;
     }
 
 
     private void startServiceInForeground()
     {
-        Intent notificationIntent = new Intent( this, m_nsdServiceClient );
-        //startActivity(new Intent(this, activity.class));
-        String serviceName = getString( R.string.nsd_service_name );
+        // startActivity(new Intent(this, activity.class));
+        String generalServiceName = getString( R.string.nsd_service_name );
+        String serviceName = m_serviceName;
+        Bitmap icon = BitmapFactory.decodeResource( this.getResources(), R.drawable.ic_nsd_service );
 
-        notificationIntent.setAction( "Listen" );
-        notificationIntent.setFlags( Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK );
+        if ( serviceName == null )
+        {
+            serviceName = generalServiceName;
+        }
 
-        PendingIntent pendingIntent = PendingIntent.getActivity( this, 0, notificationIntent, 0 );
-        Bitmap icon = BitmapFactory.decodeResource( this.getResources(), R.drawable.nsd_service );
-        Notification notification = new Notification.Builder( this ).setContentTitle( serviceName ).setTicker( serviceName )
-                        .setContentText( serviceName ).setSmallIcon( R.drawable.nsd_service )
-                        .setLargeIcon( Bitmap.createScaledBitmap( icon, 128, 128, false ) ).setContentIntent( pendingIntent )
-                        .setOngoing( false ).build();
+        Notification notification = new Notification.Builder( this ).setContentTitle( generalServiceName ).setTicker( serviceName )
+                        .setContentText( serviceName ).setSmallIcon( R.drawable.ic_nsd_service )
+                        .setLargeIcon( Bitmap.createScaledBitmap( icon, 128, 128, false ) ).setOngoing( false )
+                        .setContentIntent( getClientActivityPendingIntent( Intent.ACTION_VIEW ) )
+                        .addAction( R.drawable.ic_nsd_stop, null, getServicePendingIntent( ACTION_STOP_SERVICE ) )
+                        .addAction( R.drawable.ic_nsd_refresh, null, getServicePendingIntent( ACTION_REFRESH_SERVICE ) )
+                        .addAction( R.drawable.ic_nsd_debug, null, getServicePendingIntent( ACTION_DEBUG ) ).build();
 
         startForeground( FOREGROUND_SERVICE, notification );
     }
@@ -372,6 +469,12 @@ public class NsdService extends Service
             public void onNewService( NsdServiceInfo serviceInfo )
             {
                 connectToServer( serviceInfo.getHost(), serviceInfo.getPort() );
+            }
+
+
+            public void onLostService( NsdServiceInfo serviceInfo )
+            {
+                removeServiceIfLost( serviceInfo.getHost(), serviceInfo.getPort() );
             }
         };
     }
@@ -434,7 +537,13 @@ public class NsdService extends Service
             String hostAddress = hostAddresses.nextElement();
             CommsClient commsClient = getCommsClient( hostAddress );
 
-            if ( commsClient != null )
+            if ( commsClient == null )
+            {
+                Log.e( TAG, "Null client in remote clients list, this shouldn't happen." );
+
+                removeCommsClient( hostAddress );
+            }
+            else
             {
                 commsClient.tearDown();
             }
@@ -449,12 +558,15 @@ public class NsdService extends Service
 
         if ( commsClient == null )
         {
+            // This adds to the enclosing class' list of clients.
             commsClient = new CommsClient( inetAddress, inetPort );
         }
         else
         {
             commsClient.checkReconnect();
         }
+
+        commsClient.setServicePublished( true );
     }
 
 
@@ -472,7 +584,36 @@ public class NsdService extends Service
             commsClient.tearDown();
         }
 
+        // This adds to the enclosing class' list of clients.
         commsClient = new CommsClient( socket );
+    }
+
+
+    private void removeServiceIfLost( InetAddress inetAddress, int inetPort )
+    {
+        if ( inetAddress == null )
+        {
+            Log.e( TAG, "Service lost with no IP address." );
+
+            return;
+        }
+
+        String hostAddress = inetAddress.getHostAddress();
+        CommsClient commsClient = getCommsClient( hostAddress );
+
+        if ( commsClient != null )
+        {
+            if ( !commsClient.isConnected() )
+            {
+                // We've been given a new connected socket to the peer,
+                // so get rid of the old.
+                Log.w( TAG, "Removing " + CommsClient.class.getSimpleName() + " for connection from: " + hostAddress + ":" + hostAddress );
+
+                commsClient.tearDown();
+            }
+
+            commsClient.setServicePublished( false );
+        }
     }
 
 
@@ -485,7 +626,13 @@ public class NsdService extends Service
             String hostAddress = hostAddresses.nextElement();
             CommsClient commsClient = getCommsClient( hostAddress );
 
-            if ( commsClient != null )
+            if ( commsClient == null )
+            {
+                Log.e( TAG, "Null client in remote clients list, this shouldn't happen." );
+
+                removeCommsClient( hostAddress );
+            }
+            else
             {
                 commsClient.checkReconnect();
             }
@@ -588,7 +735,7 @@ public class NsdService extends Service
         {
             return;
         }
-        
+
         m_connected = connected;
 
         sendConnectedToUI();
@@ -622,26 +769,25 @@ public class NsdService extends Service
     }
 
 
-    private void showNotification( int strId )
-    {
-        // In this sample, we'll use the same text for the ticker and the expanded notification.
-        CharSequence text = getString( strId );
-
-        // The PendingIntent to launch our activity if the user selects this notification.
-        Intent activityIntent = new Intent( this, m_nsdServiceClient );
-        PendingIntent contentIntent = PendingIntent.getActivity( this, 0, activityIntent, 0 );
-
-        // Set the info for the views that show in the notification panel.
-        Notification notification = new Notification.Builder( this ).setSmallIcon( R.drawable.nsd_service )
-                        // the status icon
-                        .setTicker( text ).setWhen( System.currentTimeMillis() ).setContentTitle( getText( R.string.nsd_service_name ) )
-                        .setContentText( text ).setContentIntent( contentIntent ).build();
-
-        // Send the notification.
-        // We use a string id because it is a unique number. We use it later to cancel.
-        m_notificationManager.notify( strId, notification );
-    }
-
+    // private void showNotification( int strId )
+    // {
+    // // In this sample, we'll use the same text for the ticker and the expanded notification.
+    // CharSequence text = getString( strId );
+    //
+    // // The PendingIntent to launch our activity if the user selects this notification.
+    // Intent activityIntent = new Intent( this, m_nsdServiceClient );
+    // PendingIntent contentIntent = PendingIntent.getActivity( this, 0, activityIntent, 0 );
+    //
+    // // Set the info for the views that show in the notification panel.
+    // Notification notification = new Notification.Builder( this ).setSmallIcon( R.drawable.ic_nsd_service )
+    // // the status icon
+    // .setTicker( text ).setWhen( System.currentTimeMillis() ).setContentTitle( getText( R.string.nsd_service_name ) )
+    // .setContentText( text ).setContentIntent( contentIntent ).build();
+    //
+    // // Send the notification.
+    // // We use a string id because it is a unique number. We use it later to cancel.
+    // m_notificationManager.notify( strId, notification );
+    // }
 
     // This is our local server to accept incoming connections from our peers.
     private class CommsServer
@@ -703,7 +849,7 @@ public class NsdService extends Service
 
                         while ( !Thread.currentThread().isInterrupted() )
                         {
-                            Log.d( SERVER_TAG, "Awaiting new connection on ServiceSocket..." );
+                            Log.d( SERVER_TAG, "Awaiting new connection on ServerSocket..." );
                             Socket socket = m_serverSocket.accept();
                             Log.d( SERVER_TAG, "Connected." );
 
@@ -730,6 +876,7 @@ public class NsdService extends Service
         private InetAddress        m_inetAddress         = null;
         private int                m_inetPort            = 0;
         private Socket             m_socket              = null;
+        private boolean            m_servicePublished    = false;
         private ObjectInputStream  m_objectInputStream   = null;
         private ObjectOutputStream m_objectOutputStream  = null;
 
@@ -773,16 +920,19 @@ public class NsdService extends Service
             Log.d( TAG, "Tearing down " + CLIENT_TAG + " for:" + hostAddress + ":" + m_inetPort );
 
             removeCommsClient( hostAddress );
-            closeIOStreams();
-            closeSocket();
-            interruptThreads();
-            updateConnected( false );
+            tearDownContent();
         }
 
 
         public synchronized boolean isConnected()
         {
             return ( m_socket != null && m_socket.isConnected() );
+        }
+
+
+        public void setServicePublished( boolean published )
+        {
+            m_servicePublished = published;
         }
 
 
@@ -795,8 +945,7 @@ public class NsdService extends Service
 
             Log.d( TAG, "Reconnecting " + CLIENT_TAG + " for:" + m_inetAddress.getHostAddress() + ":" + m_inetPort );
 
-            closeSocket();
-            interruptThreads();
+            tearDownContent();
             createReceivingThread();
         }
 
@@ -847,6 +996,13 @@ public class NsdService extends Service
             }
 
             Log.d( CLIENT_TAG, "Client sent message '" + text + "'." );
+        }
+
+
+        private void tearDownContent()
+        {
+            closeAllIO();
+            interruptThreads();
         }
 
 
@@ -1008,15 +1164,49 @@ public class NsdService extends Service
         }
 
 
+        private void closeAllIO()
+        {
+            closeIOStreams();
+            closeSocket();
+        }
+
+
         // The receiving thread asynchronously listens for and receives messages from a peer.
         class ReceivingThread implements Runnable
         {
             // @Override
             public void run()
             {
+                boolean servicePublishedAtStart = m_servicePublished;
+
+                for ( int retries = 0; retries < REMOTE_CLIENT_RETRIES && !Thread.currentThread().isInterrupted(); retries++ )
+                {
+                    if ( retries != 0 )
+                    {
+                        closeAllIO();
+                        sleep( REMOTE_CLIENT_WAIT_MS );
+                    }
+
+                    createAndDoIOLoop();
+                }
+
+                if ( servicePublishedAtStart )
+                {
+                    // Leave the shell of the CommsClient running to allow easy reconnect.
+                    tearDownContent();
+                }
+                else
+                {
+                    // Service was not published. We were just trying to reconnect an old remote client.
+                    tearDown();
+                }
+            }
+
+
+            private void createAndDoIOLoop()
+            {
                 if ( !checkOpenSocket() || !createIOStreams() )
                 {
-                    tearDown();
                     return;
                 }
 
@@ -1039,16 +1229,27 @@ public class NsdService extends Service
                         }
                     }
                 }
-                catch ( IOException e )
+                catch ( IOException ex )
                 {
-                    Log.e( CLIENT_TAG, "Receiving loop io error: ", e );
+                    Log.e( CLIENT_TAG, "Receiving loop io error: ", ex );
                 }
-                catch ( Exception e )
+                catch ( Exception ex )
                 {
-                    Log.e( CLIENT_TAG, "Receiving loop miscellaneous exception error: ", e );
+                    Log.e( CLIENT_TAG, "Receiving loop miscellaneous exception error: ", ex );
                 }
+            }
 
-                tearDown();
+
+            private void sleep( int ms )
+            {
+                try
+                {
+                    wait( ms );
+                }
+                catch ( Exception ex )
+                {
+
+                }
             }
         }
     }

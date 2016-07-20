@@ -208,6 +208,28 @@ public class NsdHelper
     }
 
 
+    private synchronized NsdServiceInfo removeLostServiceInfo( NsdServiceInfo serviceInfo )
+    {
+        String serviceName = serviceInfo.getServiceName();
+
+        if ( m_localServiceName != null && serviceName.equals( m_localServiceName ) )
+        {
+            Log.d( TAG, "Same IP." );
+            
+            return null;
+        }
+
+        NsdServiceInfo removedService = m_remoteServices.remove( serviceInfo.getServiceName() );
+
+        if ( removedService != null )
+        {
+            m_helperHandler.onLostService( serviceInfo );
+        }
+
+        return removedService;
+    }
+
+
     private void initialiseRegistrationListener()
     {
         m_registrationListener = new NsdManager.RegistrationListener()
@@ -290,7 +312,7 @@ public class NsdHelper
             // @Override
             public void onServiceLost( NsdServiceInfo serviceInfo )
             {
-                NsdServiceInfo removedService = m_remoteServices.remove( serviceInfo.getServiceName() );
+                NsdServiceInfo removedService = removeLostServiceInfo( serviceInfo );
 
                 if ( removedService != null )
                 {

@@ -55,6 +55,11 @@ public class NsdConnection
             {
                 connectToServer( serviceInfo.getHost(), serviceInfo.getPort() );   
             }
+            
+            
+            public void onLostService( NsdServiceInfo serviceInfo )
+            {
+            }
         };
     }
     
