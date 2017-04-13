@@ -4,11 +4,17 @@ import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.nsd.NsdServiceInfo;
+import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
@@ -51,8 +57,8 @@ public class NsdService extends Service
     private static final String            TAG                    = NsdService.class.getSimpleName();
     private static final String            SERVICE_THREAD_NAME    = TAG + ":ServiceThread";
     private static final int               FOREGROUND_SERVICE     = 101;
-    private static final int               REMOTE_CLIENT_RETRIES  = 8;
-    private static final int               REMOTE_CLIENT_WAIT_MS  = 800;
+    // private static final int REMOTE_CLIENT_RETRIES = 8;
+    // private static final int               REMOTE_CLIENT_WAIT_MS  = 800;
     // Messages from NsdServiceConnection.
     public static final int                MSG_REGISTER_CLIENT    = 1;
     public static final int                MSG_UNREGISTER_CLIENT  = 2;
@@ -75,6 +81,7 @@ public class NsdService extends Service
     private String                         m_nsdServiceClientClass;
     private String                         m_nsdServiceClientFullClass;
     private NsdHelper                      m_nsdHelper;
+    private BroadcastReceiver              m_nsdBroadcastReceiver;
     private NotificationManager            m_notificationManager;
     private CommsServer                    m_commsServer;
     private Hashtable<String, CommsClient> m_commsClients         = new Hashtable<String, CommsClient>();
@@ -136,7 +143,7 @@ public class NsdService extends Service
     public void onCreate()
     {
         // To debug service:
-        // android.os.Debug.waitForDebugger();
+        android.os.Debug.waitForDebugger();
 
         m_isLocalService = !isRemoteProcess();
         m_isLocalService = false;
@@ -158,6 +165,8 @@ public class NsdService extends Service
             m_serviceMessenger = new Messenger( new IncomingHandler( this ) );
             m_binder = m_serviceMessenger.getBinder();
         }
+
+        addBroadcastReceiver();
 
         // Display a notification about us starting. We put an icon in the status bar.
         // showNotification( R.string.nsd_service_started );
@@ -186,13 +195,14 @@ public class NsdService extends Service
             m_nsdServiceClientClass = intent.getStringExtra( CLIENT_CLASS );
             m_nsdServiceClientFullClass = m_nsdServiceClientPackage + "." + m_nsdServiceClientClass;
             m_serviceName = intent.getStringExtra( SERVICE_NAME );
+
             startServiceInForeground();
         }
         else if ( ACTION_REFRESH_SERVICE.equals( action ) )
         {
             Log.i( TAG, "NSD service refreshed with id " + startId + ": " + intent );
 
-            checkReconnectClients();
+            refreshAll();
         }
         else if ( ACTION_STOP_SERVICE.equals( action ) )
         {
@@ -259,6 +269,11 @@ public class NsdService extends Service
 
         try
         {
+            if ( m_nsdBroadcastReceiver != null )
+            {
+                unregisterReceiver( m_nsdBroadcastReceiver );
+            }
+
             if ( m_commsServer != null )
             {
                 m_commsServer.tearDown();
@@ -361,14 +376,32 @@ public class NsdService extends Service
 
     public void pause()
     {
-        m_nsdHelper.stopDiscovery();
+        if ( m_nsdHelper != null && m_nsdHelper.isServiceDiscoveryActive() )
+        {
+            m_nsdHelper.stopDiscovery();
+        }
     }
 
 
     public void resume()
     {
+        checkStartNetworkServiceDiscovery();
+        checkStartServer();
         refresh();
-        m_nsdHelper.discoverServices();
+
+        if ( m_nsdHelper != null && !m_nsdHelper.isServiceDiscoveryActive() )
+        {
+            m_nsdHelper.discoverServices();
+        }
+
+        notifyClientChange( false, true );
+    }
+
+
+    public void refreshAll()
+    {
+        pause();
+        resume();
     }
 
 
@@ -388,7 +421,7 @@ public class NsdService extends Service
     {
         Intent notificationIntent = new Intent();
         ComponentName nsdServiceClientComponent = new ComponentName( m_nsdServiceClientPackage, m_nsdServiceClientFullClass );
-        
+
         notificationIntent.setComponent( nsdServiceClientComponent );
         notificationIntent.setAction( action );
         notificationIntent.setFlags( Intent.FLAG_ACTIVITY_NEW_TASK ); // | Intent.FLAG_ACTIVITY_CLEAR_TASK );
@@ -436,7 +469,7 @@ public class NsdService extends Service
     {
         Bundle bundle = msg.getData();
 
-        String serviceName = bundle.getString( "serviceName" );
+        String serviceName = bundle.getString( SERVICE_NAME );
 
         if ( m_nsdHelper != null && !serviceName.equals( m_serviceName ) )
         {
@@ -447,11 +480,8 @@ public class NsdService extends Service
         m_serviceName = serviceName;
         m_clientMessenger = msg.replyTo;
 
-        checkStartNetworkServiceDiscovery();
-        checkStartServer();
         // Doesn't need pause to resume. It will just report a warning about discovery.
         resume();
-        sendConnectedToUI();
     }
 
 
@@ -480,9 +510,76 @@ public class NsdService extends Service
     }
 
 
+    // <receiver android:name="zed.tools.lib.nsdconnect.NsdService$NsdBroadcastReceiver" >
+    // <intent-filter>
+    // <action android:name="android.net.wifi.supplicant.CONNECTION_CHANGE" />
+    // <action android:name="android.net.wifi.STATE_CHANGE" />
+    // </intent-filter>
+    // </receiver>
+
+    private BroadcastReceiver createNewNsdBroadcastReceiver()
+    {
+        return new BroadcastReceiver()
+        {
+            private final String BRCVR_TAG = TAG + ":NsdBroadcastReceiver";
+
+
+            @Override
+            public void onReceive( Context context, Intent intent )
+            {
+                // WifiManager wifiManager = (WifiManager) context.getSystemService( Context.WIFI_SERVICE );
+                NetworkInfo networkInfo = intent.getParcelableExtra( WifiManager.EXTRA_NETWORK_INFO );
+
+                if ( networkInfo == null )
+                {
+                    return;
+                }
+
+                Log.d( BRCVR_TAG, "Type: " + networkInfo.getType() + " State: " + networkInfo.getState() );
+
+                if ( networkInfo.getType() == ConnectivityManager.TYPE_WIFI )
+                {
+                    NetworkInfo.State wifiState = networkInfo.getState();
+
+                    // Get the different network states.
+                    switch ( wifiState )
+                    {
+                        case CONNECTING:
+                            break;
+
+                        case CONNECTED:
+                            resume();
+                            break;
+
+                        case DISCONNECTING:
+                        case DISCONNECTED:
+                            pause();
+                            closeCommsClients();
+                            break;
+
+                        default:
+                            break;
+                    }
+                }
+            }
+        };
+    }
+
+
+    private void addBroadcastReceiver()
+    {
+        IntentFilter wirelessIntentFilter = new IntentFilter();
+
+        wirelessIntentFilter.addAction( "android.net.wifi.supplicant.CONNECTION_CHANGE" );
+        wirelessIntentFilter.addAction( "android.net.wifi.STATE_CHANGE" );
+        m_nsdBroadcastReceiver = createNewNsdBroadcastReceiver();
+        registerReceiver( m_nsdBroadcastReceiver, wirelessIntentFilter );
+    }
+
+
     private void checkStartNetworkServiceDiscovery()
     {
-        if ( m_nsdHelper == null )
+        if ( m_nsdHelper == null && m_serviceName != null )
         {
             m_nsdHelper = new NsdHelper( this, m_serviceName, createNewNsdHelperHandler() );
         }
@@ -491,7 +588,7 @@ public class NsdService extends Service
 
     private void checkStartServer()
     {
-        if ( m_commsServer == null )
+        if ( m_commsServer == null && m_nsdHelper != null )
         {
             m_commsServer = new CommsServer();
         }
@@ -504,9 +601,9 @@ public class NsdService extends Service
     // m_commsServer = null;
     // }
 
-    private synchronized void addCommsClient( String hostAddress, CommsClient commsClient )
+    private synchronized CommsClient addCommsClient( String hostAddress, CommsClient commsClient )
     {
-        m_commsClients.put( hostAddress, commsClient );
+        return m_commsClients.put( hostAddress, commsClient );
     }
 
 
@@ -516,9 +613,23 @@ public class NsdService extends Service
     }
 
 
-    private synchronized void removeCommsClient( String hostAddress )
+    private synchronized CommsClient removeCommsClient( String hostAddress )
     {
-        m_commsClients.remove( hostAddress );
+        return m_commsClients.remove( hostAddress );
+    }
+
+
+    private synchronized CommsClient removeCommsClient( String hostAddress, CommsClient commsClient )
+    {
+        CommsClient storedCommsClient = getCommsClient( hostAddress );
+
+        if ( storedCommsClient == commsClient )
+        {
+            m_commsClients.remove( hostAddress );
+            storedCommsClient = null;
+        }
+
+        return storedCommsClient;
     }
 
 
@@ -551,7 +662,31 @@ public class NsdService extends Service
     }
 
 
-    private void connectToServer( InetAddress inetAddress, int inetPort )
+    // Close the IO for the CommsClient leaving an empty shell that can be reconnected later.
+    private void closeCommsClients()
+    {
+        Enumeration<String> hostAddresses = getCommsClientKeys();
+
+        while ( hostAddresses.hasMoreElements() )
+        {
+            String hostAddress = hostAddresses.nextElement();
+            CommsClient commsClient = getCommsClient( hostAddress );
+
+            if ( commsClient == null )
+            {
+                Log.e( TAG, "Null client in remote clients list, this shouldn't happen." );
+
+                removeCommsClient( hostAddress );
+            }
+            else
+            {
+                commsClient.close();
+            }
+        }
+    }
+
+
+    private synchronized void connectToServer( InetAddress inetAddress, int inetPort )
     {
         String hostAddress = inetAddress.getHostAddress();
         CommsClient commsClient = getCommsClient( hostAddress );
@@ -565,27 +700,55 @@ public class NsdService extends Service
         {
             commsClient.checkReconnect();
         }
-
-        commsClient.setServicePublished( true );
     }
 
 
-    private void connectToSocket( Socket socket )
+    private synchronized void connectToSocket( Socket socket )
     {
         String hostAddress = socket.getInetAddress().getHostAddress();
         CommsClient commsClient = getCommsClient( hostAddress );
 
-        if ( commsClient != null )
+        if ( commsClient != null && !commsClient.isConnected() )
         {
-            // We've been given a new connected socket to the peer,
-            // so get rid of the old.
+            // We've been given a new connected socket to the peer, so get rid of the old.
             Log.w( TAG, "Replacing " + CommsClient.class.getSimpleName() + " for connection from: " + hostAddress + ":" + socket.getPort() );
 
             commsClient.tearDown();
+            commsClient = null;
         }
 
-        // This adds to the enclosing class' list of clients.
-        commsClient = new CommsClient( socket );
+        if ( commsClient == null )
+        {
+            // This adds to the enclosing class' list of clients.
+            commsClient = new CommsClient( socket );
+        }
+        else
+        {
+            // This will cause the extra CommsClient the other end to fail to connect and die.
+            closeSocket( socket );
+        }
+    }
+
+
+    private void closeSocket( Socket socket )
+    {
+        if ( socket == null )
+        {
+            return;
+        }
+
+        try
+        {
+            socket.close();
+        }
+        catch ( IOException ioe )
+        {
+            Log.e( TAG, "Error when closing socket: " + ioe.toString() );
+        }
+        catch ( Exception ex )
+        {
+            Log.e( TAG, "Error when closing socket: " + ex.toString() );
+        }
     }
 
 
@@ -603,16 +766,16 @@ public class NsdService extends Service
 
         if ( commsClient != null )
         {
+            commsClient.setServicePublished( false );
+
             if ( !commsClient.isConnected() )
             {
                 // We've been given a new connected socket to the peer,
                 // so get rid of the old.
-                Log.w( TAG, "Removing " + CommsClient.class.getSimpleName() + " for connection from: " + hostAddress + ":" + hostAddress );
+                Log.w( TAG, "Removing " + CommsClient.class.getSimpleName() + " for connection from: " + hostAddress + ":" + inetPort );
 
                 commsClient.tearDown();
             }
-
-            commsClient.setServicePublished( false );
         }
     }
 
@@ -659,7 +822,14 @@ public class NsdService extends Service
 
     private void sendMessageToUI( Message msg )
     {
-        Log.i( TAG, "Updating message: " + msg.toString() );
+        Log.i( TAG, "Updating message: " + msg.getData().toString() );
+
+        if ( m_clientMessenger == null )
+        {
+            Log.w( TAG, "Client messenger is null." );
+
+            return;
+        }
 
         try
         {
@@ -716,29 +886,29 @@ public class NsdService extends Service
     }
 
 
-    private void notifyClientChange( boolean connected )
+    private void notifyClientChange( boolean connectedKnown, boolean forceUpdate )
     {
+        boolean connected = connectedKnown;
+
         // Newly connected is easy.
         // Otherwise we have to check if there are any remaining connected CommsClients.
-        if ( !connected )
+        if ( !connectedKnown )
         {
             connected = isAnyClientConnected();
         }
 
-        updateConnected( connected );
+        updateConnected( connected, forceUpdate );
     }
 
 
-    private void updateConnected( boolean connected )
+    private void updateConnected( boolean connected, boolean forceUpdate )
     {
-        if ( connected == m_connected )
+        if ( forceUpdate || connected != m_connected )
         {
-            return;
+            m_connected = connected;
+
+            sendConnectedToUI();
         }
-
-        m_connected = connected;
-
-        sendConnectedToUI();
     }
 
 
@@ -810,8 +980,31 @@ public class NsdService extends Service
         {
             Log.d( SERVER_TAG, "Tearing down " + SERVER_TAG + " for '" + m_serviceName + "'." );
 
-            m_nsdHelper.unregisterService();
-            m_serverThread.interrupt();
+            try
+            {
+                if ( m_nsdHelper != null )
+                {
+                    m_nsdHelper.unregisterService();
+                }
+
+                m_serverThread.interrupt();
+            }
+            catch ( Exception ex )
+            {
+                Log.e( SERVER_TAG, "Error when tearing down " + SERVER_TAG + ": " + ex.toString() );
+            }
+
+            closeServerSocket();
+            m_serverThread = null;
+        }
+
+
+        private void closeServerSocket()
+        {
+            if ( m_serverSocket == null )
+            {
+                return;
+            }
 
             try
             {
@@ -819,10 +1012,12 @@ public class NsdService extends Service
             }
             catch ( IOException ioe )
             {
-                Log.e( SERVER_TAG, "Error when closing server socket." );
+                Log.e( SERVER_TAG, "Error when closing server socket: " + ioe.toString() );
             }
-
-            m_serverThread = null;
+            catch ( Exception ex )
+            {
+                Log.e( SERVER_TAG, "Error when closing server socket: " + ex.toString() );
+            }
         }
 
 
@@ -893,7 +1088,7 @@ public class NsdService extends Service
 
             Log.d( CLIENT_TAG, "Creating " + CLIENT_TAG + " for connection to: " + hostAddress + ":" + m_inetPort );
 
-            addCommsClient( hostAddress, this );
+            addCommsClient();
             createReceivingThread();
         }
 
@@ -908,25 +1103,31 @@ public class NsdService extends Service
 
             Log.d( CLIENT_TAG, "Creating " + CLIENT_TAG + " for connection from: " + hostAddress + ":" + m_inetPort );
 
-            addCommsClient( hostAddress, this );
+            addCommsClient();
             createReceivingThread();
         }
 
 
-        public void tearDown()
+        public synchronized void tearDown()
         {
             String hostAddress = m_inetAddress.getHostAddress();
 
             Log.d( TAG, "Tearing down " + CLIENT_TAG + " for:" + hostAddress + ":" + m_inetPort );
 
-            removeCommsClient( hostAddress );
-            tearDownContent();
+            removeCommsClient( hostAddress, this );
+            close();
         }
 
 
         public synchronized boolean isConnected()
         {
             return ( m_socket != null && m_socket.isConnected() );
+        }
+
+
+        public boolean getServicePublished()
+        {
+            return m_servicePublished;
         }
 
 
@@ -945,7 +1146,7 @@ public class NsdService extends Service
 
             Log.d( TAG, "Reconnecting " + CLIENT_TAG + " for:" + m_inetAddress.getHostAddress() + ":" + m_inetPort );
 
-            tearDownContent();
+            close();
             createReceivingThread();
         }
 
@@ -981,6 +1182,8 @@ public class NsdService extends Service
                 m_objectOutputStream.writeObject( text );
                 m_objectOutputStream.flush();
                 sendInfoToUI( "Sent message with id " + msg.what + " to client " + m_inetAddress.getHostAddress() + "." );
+
+                Log.d( CLIENT_TAG, "Client sent message '" + text + "'." );
             }
             catch ( UnknownHostException ex )
             {
@@ -994,12 +1197,23 @@ public class NsdService extends Service
             {
                 Log.d( CLIENT_TAG, "Miscellaneous Exception!", ex );
             }
-
-            Log.d( CLIENT_TAG, "Client sent message '" + text + "'." );
         }
 
 
-        private void tearDownContent()
+        private void addCommsClient()
+        {
+            String hostAddress = m_inetAddress.getHostAddress();
+            CommsClient storedCommsClient = NsdService.this.addCommsClient( hostAddress, this );
+
+            if ( storedCommsClient != null )
+            {
+                // Replaced CommsClient. Make sure it is destroyed.
+                storedCommsClient.tearDown();
+            }
+        }
+
+
+        public synchronized void close()
         {
             closeAllIO();
             interruptThreads();
@@ -1008,6 +1222,7 @@ public class NsdService extends Service
 
         private void createReceivingThread()
         {
+            m_servicePublished = true;
             m_receivingThread = new Thread( new ReceivingThread(), RECEIVING_THREAD_NAME );
             m_receivingThread.start();
         }
@@ -1109,7 +1324,7 @@ public class NsdService extends Service
         }
 
 
-        private boolean checkOpenSocket()
+        private synchronized boolean checkOpenSocket()
         {
             boolean socketOk = false;
 
@@ -1137,7 +1352,7 @@ public class NsdService extends Service
                 Log.d( TAG, "Initializing socket failed, IOE.", e );
             }
 
-            notifyClientChange( socketOk );
+            notifyClientChange( socketOk, false );
 
             return socketOk;
         }
@@ -1160,11 +1375,11 @@ public class NsdService extends Service
             }
 
             m_socket = null;
-            notifyClientChange( false );
+            notifyClientChange( false, false );
         }
 
 
-        private void closeAllIO()
+        private synchronized void closeAllIO()
         {
             closeIOStreams();
             closeSocket();
@@ -1177,23 +1392,22 @@ public class NsdService extends Service
             // @Override
             public void run()
             {
-                boolean servicePublishedAtStart = m_servicePublished;
+                // for ( int retries = 0; m_servicePublished && retries < REMOTE_CLIENT_RETRIES && !Thread.currentThread().isInterrupted();
+                // retries++ )
+                // {
+                // if ( retries != 0 )
+                // {
+                // closeAllIO();
+                // sleep( REMOTE_CLIENT_WAIT_MS );
+                // }
 
-                for ( int retries = 0; retries < REMOTE_CLIENT_RETRIES && !Thread.currentThread().isInterrupted(); retries++ )
-                {
-                    if ( retries != 0 )
-                    {
-                        closeAllIO();
-                        sleep( REMOTE_CLIENT_WAIT_MS );
-                    }
+                createAndDoIOLoop();
+                // }
 
-                    createAndDoIOLoop();
-                }
-
-                if ( servicePublishedAtStart )
+                if ( getServicePublished() )
                 {
                     // Leave the shell of the CommsClient running to allow easy reconnect.
-                    tearDownContent();
+                    close();
                 }
                 else
                 {
@@ -1240,17 +1454,17 @@ public class NsdService extends Service
             }
 
 
-            private void sleep( int ms )
-            {
-                try
-                {
-                    wait( ms );
-                }
-                catch ( Exception ex )
-                {
-
-                }
-            }
+            // private void sleep( int ms )
+            // {
+            // try
+            // {
+            // wait( ms );
+            // }
+            // catch ( Exception ex )
+            // {
+            //
+            // }
+            // }
         }
     }
 

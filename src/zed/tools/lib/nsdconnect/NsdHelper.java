@@ -143,6 +143,12 @@ public class NsdHelper
     }
 
 
+    public boolean isServiceDiscoveryActive()
+    {
+        return m_serviceDiscovery;
+    }
+
+
     public void discoverServices()
     {
         if ( m_serviceDiscovery )
@@ -215,18 +221,18 @@ public class NsdHelper
         if ( m_localServiceName != null && serviceName.equals( m_localServiceName ) )
         {
             Log.d( TAG, "Same IP." );
-            
+
             return null;
         }
 
-        NsdServiceInfo removedService = m_remoteServices.remove( serviceInfo.getServiceName() );
+        NsdServiceInfo removedServiceInfo = m_remoteServices.remove( serviceInfo.getServiceName() );
 
-        if ( removedService != null )
+        if ( removedServiceInfo != null )
         {
-            m_helperHandler.onLostService( serviceInfo );
+            m_helperHandler.onLostService( removedServiceInfo );
         }
 
-        return removedService;
+        return removedServiceInfo;
     }
 
 
@@ -294,11 +300,11 @@ public class NsdHelper
 
                 if ( !serviceInfo.getServiceType().equals( SERVICE_TYPE ) )
                 {
-                    Log.d( TAG, "Unknown Service Type: " + serviceInfo.getServiceType() );
+                    Log.d( TAG, "Unknown service type: " + serviceInfo.getServiceType() );
                 }
                 else if ( m_localServiceName != null && serviceName.equals( m_localServiceName ) )
                 {
-                    Log.d( TAG, "Service on same machine: " + serviceInfo );
+                    Log.d( TAG, "Service on same machine." );
                 }
                 else if ( serviceName.contains( m_serviceName ) )
                 {
@@ -312,15 +318,30 @@ public class NsdHelper
             // @Override
             public void onServiceLost( NsdServiceInfo serviceInfo )
             {
-                NsdServiceInfo removedService = removeLostServiceInfo( serviceInfo );
+                Log.d( TAG, "Service lost: " + serviceInfo );
 
-                if ( removedService != null )
+                String serviceName = serviceInfo.getServiceName();
+
+                if ( !serviceInfo.getServiceType().equals( SERVICE_TYPE ) )
                 {
-                    Log.w( TAG, "Remote service lost: " + serviceInfo );
+                    Log.d( TAG, "Unknown service type: " + serviceInfo.getServiceType() );
+                }
+                else if ( m_localServiceName != null && serviceName.equals( m_localServiceName ) )
+                {
+                    Log.d( TAG, "Service on same machine." );
                 }
                 else
                 {
-                    Log.d( TAG, "Other service lost: " + serviceInfo );
+                    NsdServiceInfo removedService = removeLostServiceInfo( serviceInfo );
+
+                    if ( removedService == null )
+                    {
+                        Log.w( TAG, "Unregistered service lost." );
+                    }
+                    else if ( serviceName.contains( m_serviceName ) )
+                    {
+                        Log.i( TAG, "Unregistering service on remote machine: " + removedService );
+                    }
                 }
             }
 
